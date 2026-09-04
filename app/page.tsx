@@ -53,7 +53,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState('home')
 
   const [editName, setEditName] = useState("")
-  const [editEmail, setEditEmail] = useState("") // 💡 حالة الإيميل الجديد
+  const [editEmail, setEditEmail] = useState("") 
   const [editPassword, setEditPassword] = useState("")
   const [settingsLoading, setSettingsLoading] = useState(false)
 
@@ -352,7 +352,6 @@ export default function Home() {
         isUpdated = true;
       }
       
-      // 💡 تحديث الإيميل
       if (editEmail.trim() && editEmail !== session.user.email) {
         const { error } = await supabase.auth.updateUser({ email: editEmail.trim() })
         if (error) throw error
@@ -376,17 +375,13 @@ export default function Home() {
     setSettingsLoading(false)
   }
 
-  // 💡 وظيفة حذف الحساب نهائياً
   const handleDeleteAccount = async () => {
     const confirmMsg = "⚠️ تحذير خطير: هل أنت متأكد من حذف حسابك بشكل نهائي؟\n\nسيتم مسح نصوصك وبياناتك، وستختفي خريطتك بالكامل من أجهزة جميع طلابك. لا يمكن التراجع عن هذا الإجراء!";
     if (!window.confirm(confirmMsg)) return;
 
     try {
       setSettingsLoading(true);
-      // مسح النصوص التابعة للمعلم (ليتم مسح التحديات المرتبطة بها إذا كانت قاعدة البيانات مصممة بـ Cascade)
       await supabase.from('texts').delete().eq('teacher_id', session.user.id);
-      
-      // مسح البروفايل (هذا سيكسر الرابط بين الطالب والمعلم ويخفي الخريطة)
       await supabase.from('profiles').delete().eq('id', session.user.id);
 
       alert("تم حذف الحساب بنجاح. نتمنى لك التوفيق!");
@@ -484,13 +479,27 @@ export default function Home() {
     }
   }
 
-  const handleSort = async () => { /* ... */ }
+  const handleSort = async () => {
+    if (dragItem.current === null || dragOverItem.current === null) return;
+    const copyChallenges = [...challenges];
+    const draggedContent = copyChallenges.splice(dragItem.current, 1)[0];
+    copyChallenges.splice(dragOverItem.current, 0, draggedContent);
+    dragItem.current = null;
+    dragOverItem.current = null;
+    setChallenges(copyChallenges);
+
+    copyChallenges.forEach(async (challenge, index) => {
+      await supabase.from('challenges').update({ order_index: index }).eq('id', challenge.id);
+    });
+  };
+
   const handleAddNewLevel = async () => {
     if (!selectedText) return
     const newLevelName = `المرحلة ${levels.length + 1}`
     const { data } = await supabase.from('levels').insert([{ name: newLevelName, text_id: selectedText }]).select()
     if (data) { setLevels([...levels, data[0]]); setSelectedLevel(data[0].id.toString()) }
   }
+
   const handleRenameLevel = async () => {
     if (!selectedLevel) return
     const currentLevelObj = levels.find(l => l.id.toString() === selectedLevel)
@@ -500,6 +509,7 @@ export default function Home() {
     const { error } = await supabase.from('levels').update({ name: newName.trim() }).eq('id', selectedLevel)
     if (!error) setLevels(levels.map(l => l.id.toString() === selectedLevel ? { ...l, name: newName.trim() } : l))
   }
+
   const handleDeleteLevel = async () => {
     if (!selectedLevel) return
     const confirm = window.confirm("هل أنت متأكد من حذف هذه المرحلة؟")
@@ -511,13 +521,129 @@ export default function Home() {
       setSelectedLevel(updated.length > 0 ? updated[0].id.toString() : "")
     }
   }
-  const startRecording = async (index: number) => { /* ... */ }
-  const stopRecording = () => { /* ... */ }
-  const addAudioPair = () => { setAudioPairs([...audioPairs, { word: "", file: null }]) }
-  const removeAudioPair = (index: number) => { /* ... */ }
-  const clearAudioFile = (index: number) => { /* ... */ }
-  const handleAddChallenge = async (type: string) => { /* ... */ }
-  const handleDeleteChallenge = async (id: number) => { await supabase.from('challenges').delete().eq('id', id); fetchChallenges(selectedLevel); }
+
+  const startRecording = async (index: number) => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { alert("⚠️ متصفحك لا يدعم التسجيل."); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+      mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) audioChunksRef.current.push(event.data); };
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current);
+        const fileExt = audioBlob.type.includes('mp4') ? 'm4a' : 'webm';
+        const audioFile = new File([audioBlob], `audio_${Date.now()}.${fileExt}`, { type: audioBlob.type });
+        const newPairs = [...audioPairs];
+        newPairs[index].file = audioFile;
+        setAudioPairs(newPairs);
+        stream.getTracks().forEach(track => track.stop());
+        setRecordingIndex(null);
+      };
+      mediaRecorder.start();
+      setRecordingIndex(index);
+    } catch (err: any) { alert("❌ فشل الوصول للمايكروفون."); }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  const addAudioPair = () => { setAudioPairs([...audioPairs, { word: "", file: null }]) };
+
+  const removeAudioPair = (index: number) => {
+    const newPairs = [...audioPairs];
+    newPairs.splice(index, 1);
+    setAudioPairs(newPairs);
+  };
+
+  const clearAudioFile = (index: number) => {
+    const newPairs = [...audioPairs];
+    newPairs[index].file = null;
+    setAudioPairs(newPairs);
+  };
+
+  const handleAddChallenge = async (type: string) => {
+    if (!selectedLevel) { alert("الرجاء اختيار المرحلة أولاً"); return; }
+    setIsUploading(true);
+    try {
+      let contentObj: any = {};
+
+      const uploadFile = async (file: File, bucket: string) => {
+        const fileName = `${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
+        const { error } = await supabase.storage.from(bucket).upload(fileName, file);
+        if (error) throw error;
+        const { data } = supabase.storage.from(bucket).getPublicUrl(fileName);
+        return data.publicUrl;
+      };
+
+      if (type === 'reading') {
+        if (!readingSentence) throw new Error("أدخل الجملة");
+        contentObj = { sentence: readingSentence };
+      } else if (type === 'jumble') {
+        if (!jumbleWords) throw new Error("أدخل الكلمات");
+        contentObj = { words: jumbleWords.split(',').map(w => w.trim()) };
+      } else if (type === 'match') {
+        if (!matchWord || !imageFile) throw new Error("أدخل الكلمة وارفع الصورة");
+        const imageUrl = await uploadFile(imageFile, 'images');
+        contentObj = { word: matchWord, options, image_url: imageUrl };
+      } else if (type === 'audio_match') {
+        let pairsData = [];
+        for (let i=0; i<audioPairs.length; i++) {
+          if (audioPairs[i].word && audioPairs[i].file) {
+            const audioUrl = await uploadFile(audioPairs[i].file!, 'audios');
+            pairsData.push({ word: audioPairs[i].word, audio_url: audioUrl });
+          }
+        }
+        if (pairsData.length < 2) throw new Error("أدخل على الأقل كلمتين مع الصوت");
+        contentObj = { pairs: pairsData };
+      } else if (type === 'spelling') {
+        if (!spellingWord || !spellingImage) throw new Error("أدخل الكلمة وارفع الصورة");
+        const imageUrl = await uploadFile(spellingImage, 'images');
+        contentObj = { word: spellingWord, image_url: imageUrl };
+      } else if (type === 'missing_letter') {
+        if (!missingWord || !correctLetter || !missingImage) throw new Error("أكمل بيانات التحدي");
+        const imageUrl = await uploadFile(missingImage, 'images');
+        contentObj = { word: missingWord, options: missingOptions, correct_letter: correctLetter, image_url: imageUrl };
+      } else if (type === 'letter_hunt') {
+        if (!huntTarget || !huntDistractors) throw new Error("أدخل الحرف الهدف والمشتتات");
+        contentObj = { target: huntTarget, distractors: huntDistractors.split(',').map(w => w.trim()) };
+      }
+
+      const newOrder = challenges.length > 0 ? Math.max(...challenges.map(c => c.order_index || 0)) + 1 : 1;
+
+      const { error } = await supabase.from('challenges').insert([{
+        level_id: selectedLevel,
+        challenge_type: type,
+        content: JSON.stringify(contentObj),
+        order_index: newOrder
+      }]);
+
+      if (error) throw error;
+
+      alert("✅ تم إضافة التحدي بنجاح!");
+      fetchChallenges(selectedLevel);
+
+      setReadingSentence(""); setJumbleWords(""); setImageFile(null); setMatchWord("");
+      setOptions(["", "", ""]); setSpellingWord(""); setSpellingImage(null); setMissingWord("");
+      setCorrectLetter(""); setMissingOptions(["", "", ""]); setMissingImage(null);
+      setHuntTarget(""); setHuntDistractors("");
+      setAudioPairs([{ word: "", file: null }, { word: "", file: null }, { word: "", file: null }, { word: "", file: null }]);
+
+    } catch (err: any) {
+      alert("❌ خطأ: " + err.message);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleDeleteChallenge = async (id: number) => { 
+    await supabase.from('challenges').delete().eq('id', id); 
+    fetchChallenges(selectedLevel); 
+  }
+
   const getChallengeTypeName = (type: string) => {
     if (type === 'reading') return '🎙️ قراءة'; if (type === 'jumble') return '🧩 ترتيب'; if (type === 'match') return '🖼️ صورة';
     if (type === 'audio_match') return '🎧 توصيل'; if (type === 'spelling') return '🔠 إملاء'; if (type === 'missing_letter') return '🔤 ناقص';
