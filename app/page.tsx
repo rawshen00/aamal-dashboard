@@ -78,6 +78,26 @@ export default function Home() {
   const [editFullContent, setEditFullContent] = useState("")
   const [isTextUnlocked, setIsTextUnlocked] = useState(false) 
   const [textAudioFile, setTextAudioFile] = useState<File | null>(null)
+  const loadedTextIdRef = useRef<string | null>(null)
+  const textSaveBusyRef = useRef(false)
+  const [textPreviewUrl, setTextPreviewUrl] = useState("")
+
+  useEffect(() => {
+    if (!textAudioFile) { setTextPreviewUrl(""); return; }
+    const url = URL.createObjectURL(textAudioFile)
+    setTextPreviewUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [textAudioFile])
+
+  useEffect(() => {
+    const warnBeforeRefresh = (event: BeforeUnloadEvent) => {
+      if (!textAudioFile && !textMediaRecorderRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener('beforeunload', warnBeforeRefresh)
+    return () => window.removeEventListener('beforeunload', warnBeforeRefresh)
+  }, [textAudioFile])
   const [isSavingTextDetails, setIsSavingTextDetails] = useState(false)
   const [isRecordingText, setIsRecordingText] = useState(false)
   const textMediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -193,13 +213,16 @@ export default function Home() {
     if (selectedText) { 
       fetchLevels(selectedText)
       const t = texts.find(x => x.id.toString() === selectedText)
-      if (t) {
+      if (t && loadedTextIdRef.current !== selectedText) {
+        loadedTextIdRef.current = selectedText
         setEditFullContent(t.full_content || "")
         setTextAudioFile(null) 
         setIsTextUnlocked(false) 
         setSyncTimestamps(t.sync_data || [])
       }
-    } else { 
+    } else {
+      loadedTextIdRef.current = null
+      setTextAudioFile(null)
       setLevels([]); 
       setSelectedLevel("");
       setEditFullContent("")
@@ -505,6 +528,7 @@ export default function Home() {
   }
 
   const startRecordingText = async () => {
+    if (isSavingTextDetails || textMediaRecorderRef.current) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       alert("⚠️ متصفحك لا يدعم التسجيل."); return;
     }
@@ -515,11 +539,14 @@ export default function Home() {
       textAudioChunksRef.current = []
       mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) textAudioChunksRef.current.push(event.data) }
       mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(textAudioChunksRef.current) 
-        const fileExt = audioBlob.type.includes('mp4') ? 'm4a' : 'webm'
+        const audioBlob = new Blob(textAudioChunksRef.current, { type: mediaRecorder.mimeType || textAudioChunksRef.current[0]?.type || "audio/webm" }) 
+        const fileExt = audioBlob.type.includes('mp4') ? 'm4a' : audioBlob.type.includes('ogg') ? 'ogg' : audioBlob.type.includes('wav') ? 'wav' : 'webm'
         const audioFile = new File([audioBlob], `text_audio_${Date.now()}.${fileExt}`, { type: audioBlob.type })
-        setTextAudioFile(audioFile)
+        if (audioFile.size > 0) setTextAudioFile(audioFile)
+        else alert("التسجيل فارغ. يرجى المحاولة مرة أخرى.")
         stream.getTracks().forEach(track => track.stop())
+        textMediaRecorderRef.current = null
+        setIsRecordingText(false)
       }
       mediaRecorder.start()
       setIsRecordingText(true)
@@ -528,7 +555,7 @@ export default function Home() {
 
   const stopRecordingText = () => {
     if (textMediaRecorderRef.current && textMediaRecorderRef.current.state !== 'inactive') {
-      textMediaRecorderRef.current.stop(); setIsRecordingText(false)
+      textMediaRecorderRef.current.stop()
     }
   }
 
@@ -580,32 +607,46 @@ export default function Home() {
   }, [showSyncStudio, currentSyncIndex, syncWords, syncTimestamps]);
 
   const saveTextDetails = async () => {
-    if (!selectedText) return;
+    if (!selectedText || textSaveBusyRef.current) return;
+    if (textMediaRecorderRef.current || isRecordingText) {
+      alert("أوقف التسجيل وانتظر حتى يصبح جاهزًا قبل الحفظ."); return;
+    }
+    const targetTextId = selectedText;
+    const pendingAudio = textAudioFile;
+    textSaveBusyRef.current = true;
     setIsSavingTextDetails(true);
     try {
-      let uploadedAudioUrl = null;
-      if (textAudioFile) {
-        const fileExt = textAudioFile.name.split('.').pop();
+      let uploadedAudioUrl: string | null = null;
+      if (pendingAudio) {
+        if (!pendingAudio.size) throw new Error("التسجيل فارغ. أعد التسجيل.");
+        const fileExt = pendingAudio.name.split('.').pop();
         const safeFileName = `text_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${fileExt}`;
-        const { error: uploadError } = await supabase.storage.from('audios').upload(safeFileName, textAudioFile);
-        if (uploadError) throw uploadError;
+        const { error: uploadError } = await supabase.storage.from('audios').upload(safeFileName, pendingAudio, {
+          contentType: pendingAudio.type || 'application/octet-stream',
+          upsert: false,
+        });
+        if (uploadError) throw new Error("تعذر رفع التسجيل: " + uploadError.message);
         uploadedAudioUrl = supabase.storage.from('audios').getPublicUrl(safeFileName).data.publicUrl;
       }
-
       const updateData: any = { full_content: editFullContent };
       if (uploadedAudioUrl) updateData.audio_url = uploadedAudioUrl;
       if (syncTimestamps.length > 0) updateData.sync_data = syncTimestamps;
 
-      const { error } = await supabase.from('texts').update(updateData).eq('id', selectedText);
-      if (error) throw error;
-      
-      setTexts(texts.map(t => t.id.toString() === selectedText ? { ...t, ...updateData } : t));
-      alert("✅ تم حفظ محتوى النص والتسجيل بنجاح!");
-      setTextAudioFile(null); 
-      setIsTextUnlocked(false); 
+      const { data: savedText, error } = await supabase.from('texts')
+        .update(updateData).eq('id', targetTextId).select('*').single();
+      if (error) throw new Error("تعذر تأكيد حفظ النص والتسجيل: " + error.message);
+      if (!savedText || String(savedText.id) !== targetTextId ||
+          (uploadedAudioUrl && savedText.audio_url !== uploadedAudioUrl)) {
+        throw new Error("لم يتم تأكيد ربط التسجيل بالنص. التسجيل المؤقت ما زال متاحًا لإعادة الحفظ.");
+      }
+      setTexts(previous => previous.map(t => String(t.id) === targetTextId ? savedText : t));
+      setTextAudioFile(null);
+      setIsTextUnlocked(false);
+      alert(uploadedAudioUrl ? "✅ تم حفظ النص وربط التسجيل به بنجاح!" : "✅ تم حفظ النص بنجاح.");
     } catch (err: any) {
-      alert("❌ حدث خطأ أثناء الحفظ: " + err.message);
+      alert("❌ " + (err?.message || "تعذر الحفظ. حاول مرة أخرى."));
     } finally {
+      textSaveBusyRef.current = false;
       setIsSavingTextDetails(false);
     }
   }
@@ -621,8 +662,8 @@ export default function Home() {
       defaultAudioChunksRef.current = []
       mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) defaultAudioChunksRef.current.push(event.data) }
       mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(defaultAudioChunksRef.current) 
-        const fileExt = audioBlob.type.includes('mp4') ? 'm4a' : 'webm'
+        const audioBlob = new Blob(defaultAudioChunksRef.current, { type: mediaRecorder.mimeType || defaultAudioChunksRef.current[0]?.type || "audio/webm" }) 
+        const fileExt = audioBlob.type.includes('mp4') ? 'm4a' : audioBlob.type.includes('ogg') ? 'ogg' : audioBlob.type.includes('wav') ? 'wav' : 'webm'
         const audioFile = new File([audioBlob], `default_${type}.${fileExt}`, { type: audioBlob.type })
         await uploadDefaultAudio(type, audioFile)
         stream.getTracks().forEach(track => track.stop())
@@ -728,8 +769,8 @@ export default function Home() {
       audioChunksRef.current = [];
       mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) audioChunksRef.current.push(event.data); };
       mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current);
-        const fileExt = audioBlob.type.includes('mp4') ? 'm4a' : 'webm';
+        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || audioChunksRef.current[0]?.type || "audio/webm" });
+        const fileExt = audioBlob.type.includes('mp4') ? 'm4a' : audioBlob.type.includes('ogg') ? 'ogg' : audioBlob.type.includes('wav') ? 'wav' : 'webm';
         const audioFile = new File([audioBlob], `audio_${Date.now()}.${fileExt}`, { type: audioBlob.type });
         const newPairs = [...audioPairs];
         newPairs[index].file = audioFile;
@@ -924,7 +965,7 @@ export default function Home() {
   }
 
   const currentTextObjForSync = texts.find(t => t.id.toString() === selectedText);
-  const syncAudioSrc = textAudioFile ? URL.createObjectURL(textAudioFile) : currentTextObjForSync?.audio_url;
+  const syncAudioSrc = textAudioFile ? textPreviewUrl : currentTextObjForSync?.audio_url;
 
   return (
     <div className="flex h-screen bg-[#111b21] text-white font-sans dir-rtl selection:bg-[#00a884] selection:text-[#111b21]">
@@ -974,7 +1015,10 @@ export default function Home() {
                     </CardHeader>
                     <CardContent className="pt-6 space-y-4">
                       <Label className="text-[#8696a0] font-bold text-base">اختر النص الدراسي:</Label>
-                      <Select value={selectedText} onValueChange={setSelectedText}>
+                      <Select value={selectedText} disabled={isSavingTextDetails || isRecordingText} onValueChange={(value) => {
+                        if (textAudioFile && !window.confirm("يوجد تسجيل غير محفوظ. هل تريد تجاهله والانتقال لنص آخر؟")) return;
+                        setSelectedText(value);
+                      }}>
                         <SelectTrigger className="w-full h-14 text-lg bg-[#111b21] border-[#2f3b43] text-white rounded-xl focus:ring-[#00a884]" dir="rtl">
                           <SelectValue placeholder="اختر النص" />
                         </SelectTrigger>
@@ -1005,13 +1049,13 @@ export default function Home() {
                             <Textarea 
                               value={editFullContent} 
                               onChange={(e: any) => setEditFullContent(e.target.value)} 
-                              readOnly={!isTextUnlocked}
+                              readOnly={!isTextUnlocked || isSavingTextDetails}
                               placeholder="اكتب قصة أو نص هذه الجلسة هنا ليتمكن الطالب من قراءتها قبل بدء التحديات..." 
                               className={`min-h-[120px] text-right bg-[#111b21] border-[#2f3b43] text-white text-lg rounded-xl focus-visible:ring-0 focus-visible:border-[#00a884] resize-y ${!isTextUnlocked ? 'opacity-70 cursor-not-allowed select-none' : ''}`} 
                             />
                           </div>
 
-                          <div className="space-y-3">
+                          <fieldset disabled={isSavingTextDetails} className="space-y-3">
                             <Label className="text-[#8696a0] font-bold flex items-center gap-2">
                               <Mic size={18} className="text-[#00a884]" /> أضف التسجيل الصوتي للقصة (اختياري):
                             </Label>
@@ -1026,7 +1070,7 @@ export default function Home() {
                                 <TabsContent value="record" className="m-0 space-y-4">
                                   {textAudioFile ? (
                                     <div className="flex items-center justify-between bg-[#182b28] border border-[#00a884] p-3 rounded-xl">
-                                      <span className="text-[#00a884] font-bold flex items-center gap-2"><Play size={16}/> تم التقاط التسجيل</span>
+                                      <span className="text-[#00a884] font-bold flex items-center gap-2"><Play size={16}/> التسجيل جاهز — اضغط حفظ النص والتسجيل</span>
                                       <Button variant="ghost" size="sm" onClick={() => setTextAudioFile(null)} className="text-[#f44336] hover:bg-[#f44336]/10 h-8"><Trash2 size={16}/></Button>
                                     </div>
                                   ) : (
@@ -1058,18 +1102,31 @@ export default function Home() {
                                 </TabsContent>
                               </div>
                             </Tabs>
-                          </div>
+                            {textAudioFile && textPreviewUrl ? (
+                              <div className="space-y-2">
+                                <p className="text-amber-300 text-sm">تسجيل جديد غير محفوظ. احفظه قبل تحديث الصفحة.</p>
+                                <audio src={textPreviewUrl} controls className="w-full" />
+                              </div>
+                            ) : currentTextObjForSync?.audio_url ? (
+                              <div className="space-y-2">
+                                <p className="text-[#00a884] text-sm">التسجيل المحفوظ لهذه القصة</p>
+                                <audio src={currentTextObjForSync.audio_url} controls className="w-full" />
+                              </div>
+                            ) : (
+                              <p className="text-[#8696a0] text-sm">لا يوجد تسجيل محفوظ لهذه القصة.</p>
+                            )}
+                          </fieldset>
 
                           <div className="flex gap-2 flex-wrap md:flex-nowrap">
-                            <Button onClick={saveTextDetails} disabled={isSavingTextDetails} className="flex-1 bg-[#2a3942] border border-[#2f3b43] text-white hover:bg-[#00a884] hover:text-[#111b21] h-14 rounded-xl font-bold transition-colors text-sm md:text-base">
-                              {isSavingTextDetails ? <Loader2 className="animate-spin h-5 w-5" /> : "حفظ النص"}
+                            <Button onClick={saveTextDetails} disabled={isSavingTextDetails || isRecordingText} className="flex-1 bg-[#2a3942] border border-[#2f3b43] text-white hover:bg-[#00a884] hover:text-[#111b21] h-14 rounded-xl font-bold transition-colors text-sm md:text-base">
+                              {isSavingTextDetails ? <Loader2 className="animate-spin h-5 w-5" /> : "حفظ النص والتسجيل"}
                             </Button>
                             <Button onClick={() => setIsTextUnlocked(!isTextUnlocked)} variant="outline" className={`h-14 px-3 md:px-5 rounded-xl font-bold border-2 text-sm md:text-base ${isTextUnlocked ? 'border-[#00a884] text-[#00a884] bg-[#00a884]/10' : 'border-[#2f3b43] text-[#8696a0] bg-transparent'}`}>
                               {isTextUnlocked ? <Unlock size={18} className="ml-1"/> : <LockIcon size={18} className="ml-1"/>} 
                               {isTextUnlocked ? 'مفتوح' : 'تعديل'}
                             </Button>
                             
-                            <Button onClick={openSyncStudio} variant="outline" className="h-14 px-3 md:px-5 rounded-xl font-bold border-2 border-[#2cb5db] text-[#2cb5db] hover:bg-[#2cb5db]/10 text-sm md:text-base">
+                            <Button onClick={openSyncStudio} disabled={isSavingTextDetails || isRecordingText} variant="outline" className="h-14 px-3 md:px-5 rounded-xl font-bold border-2 border-[#2cb5db] text-[#2cb5db] hover:bg-[#2cb5db]/10 text-sm md:text-base">
                               <Sparkles size={18} className="ml-1" /> المزامنة
                             </Button>
                           </div>
