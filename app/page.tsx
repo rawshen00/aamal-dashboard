@@ -75,6 +75,11 @@ export default function Home() {
   const [selectedLevel, setSelectedLevel] = useState<string>("")
   const [challenges, setChallenges] = useState<any[]>([])
   
+  // متغيرات ترتيب الجلسات
+  const [showTextReorderModal, setShowTextReorderModal] = useState(false);
+  const textDragItem = useRef<number | null>(null);
+  const textDragOverItem = useRef<number | null>(null);
+
   const [editFullContent, setEditFullContent] = useState("")
   const [isTextUnlocked, setIsTextUnlocked] = useState(false) 
   const [textAudioFile, setTextAudioFile] = useState<File | null>(null)
@@ -98,6 +103,7 @@ export default function Home() {
     window.addEventListener('beforeunload', warnBeforeRefresh)
     return () => window.removeEventListener('beforeunload', warnBeforeRefresh)
   }, [textAudioFile])
+  
   const [isSavingTextDetails, setIsSavingTextDetails] = useState(false)
   const [isRecordingText, setIsRecordingText] = useState(false)
   const textMediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -228,8 +234,14 @@ export default function Home() {
       setEditFullContent("")
       setIsTextUnlocked(false)
       setSyncTimestamps([])
-    } 
+    }
+     
   }, [selectedText, texts])
+  const fetchChallenges = async (levelId: string) => 
+    {
+    const { data } = await supabase.from('challenges').select('*').eq('level_id', levelId).order('order_index', { ascending: true }).order('id', { ascending: true })
+    if (data) setChallenges(data)
+  }
 
   useEffect(() => { if (selectedLevel) { fetchChallenges(selectedLevel) } else { setChallenges([]) } }, [selectedLevel])
 
@@ -364,24 +376,50 @@ export default function Home() {
   };
 
   const fetchTexts = async (userId: string, role: string) => {
-    if (role === 'super_admin') {
-      const { data } = await supabase.from('texts').select('*').order('id')
-      if (data) { setTexts(data); if (data.length > 0 && !selectedText) setSelectedText(data[0].id.toString()); }
-    } else {
-      const { data } = await supabase.from('texts').select('*').eq('teacher_id', userId).order('id')
-      if (data) { setTexts(data); if (data.length > 0 && !selectedText) setSelectedText(data[0].id.toString()); }
+    let query = supabase.from('texts').select('*').order('order_index', { ascending: true }).order('id', { ascending: true });
+    if (role !== 'super_admin') {
+      query = query.eq('teacher_id', userId);
+    }
+    const { data } = await query;
+    if (data) {
+      setTexts(data);
+      const savedTextId = localStorage.getItem('aamal_selected_text');
+      if (savedTextId && data.find(t => t.id.toString() === savedTextId)) {
+        setSelectedText(savedTextId);
+      } else if (data.length > 0 && !selectedText) {
+        setSelectedText(data[0].id.toString());
+      }
     }
   }
 
   const fetchLevels = async (textId: string) => {
     const { data } = await supabase.from('levels').select('*').eq('text_id', textId).order('id')
-    if (data) { setLevels(data); if (data.length > 0) setSelectedLevel(data[0].id.toString()); else setSelectedLevel(""); }
+    if (data) {
+      setLevels(data);
+      const savedLevelId = localStorage.getItem('aamal_selected_level');
+      if (savedLevelId && data.find(l => l.id.toString() === savedLevelId)) {
+        setSelectedLevel(savedLevelId);
+      } else if (data.length > 0) {
+        setSelectedLevel(data[0].id.toString());
+      } else {
+        setSelectedLevel("");
+      }
+    }
   }
 
-  const fetchChallenges = async (levelId: string) => {
-    const { data } = await supabase.from('challenges').select('*').eq('level_id', levelId).order('order_index', { ascending: true }).order('id', { ascending: true })
-    if (data) setChallenges(data)
-  }
+  const handleTextSort = async () => {
+    if (textDragItem.current === null || textDragOverItem.current === null) return;
+    const copyTexts = [...texts];
+    const draggedContent = copyTexts.splice(textDragItem.current, 1)[0];
+    copyTexts.splice(textDragOverItem.current, 0, draggedContent);
+    textDragItem.current = null;
+    textDragOverItem.current = null;
+    setTexts(copyTexts);
+
+    copyTexts.forEach(async (text, index) => {
+      await supabase.from('texts').update({ order_index: index }).eq('id', text.id);
+    });
+  };
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -481,7 +519,8 @@ export default function Home() {
     if (!session || !profile) return;
     const newTextName = `النص ${texts.length + 1}`
     const tId = profile.role === 'super_admin' ? null : session.user.id;
-    const { data } = await supabase.from('texts').insert([{ name: newTextName, teacher_id: tId }]).select()
+    const newOrder = texts.length > 0 ? Math.max(...texts.map(t => t.order_index || 0)) + 1 : 0;
+    const { data } = await supabase.from('texts').insert([{ name: newTextName, teacher_id: tId, order_index: newOrder }]).select()
     if (data) { setTexts([...texts, data[0]]); setSelectedText(data[0].id.toString()) }
   }
 
@@ -520,7 +559,13 @@ export default function Home() {
         if (!error) {
           const updated = texts.filter(t => t.id.toString() !== selectedText)
           setTexts(updated)
-          setSelectedText(updated.length > 0 ? updated[0].id.toString() : "")
+          if (updated.length > 0) {
+             setSelectedText(updated[0].id.toString());
+             localStorage.setItem('aamal_selected_text', updated[0].id.toString());
+          } else {
+             setSelectedText("");
+             localStorage.removeItem('aamal_selected_text');
+          }
         }
         setDialogConfig({ ...dialogConfig, isOpen: false });
       }
@@ -1018,6 +1063,8 @@ export default function Home() {
                       <Select value={selectedText} disabled={isSavingTextDetails || isRecordingText} onValueChange={(value) => {
                         if (textAudioFile && !window.confirm("يوجد تسجيل غير محفوظ. هل تريد تجاهله والانتقال لنص آخر؟")) return;
                         setSelectedText(value);
+                        localStorage.setItem('aamal_selected_text', value); 
+                        localStorage.removeItem('aamal_selected_level');
                       }}>
                         <SelectTrigger className="w-full h-14 text-lg bg-[#111b21] border-[#2f3b43] text-white rounded-xl focus:ring-[#00a884]" dir="rtl">
                           <SelectValue placeholder="اختر النص" />
@@ -1032,6 +1079,7 @@ export default function Home() {
                       </Select>
                       <div className="flex gap-3 pt-2">
                         <Button onClick={handleAddNewText} className="flex-1 h-12 bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold rounded-xl"><PlusCircle className="ml-2 h-5 w-5" /> إضافة نص</Button>
+                        <Button onClick={() => setShowTextReorderModal(true)} variant="outline" className="h-12 bg-transparent border-[#2f3b43] text-white hover:bg-[#2a3942] rounded-xl px-4"><GripVertical className="ml-2 h-5 w-5" /> ترتيب</Button>
                         {selectedText && (
                           <>
                             <Button onClick={handleRenameText} variant="outline" className="h-12 bg-transparent border-[#2f3b43] text-white hover:bg-[#2a3942] rounded-xl"><Edit className="h-5 w-5" /></Button>
@@ -1141,7 +1189,10 @@ export default function Home() {
                     </CardHeader>
                     <CardContent className="pt-6 space-y-4">
                       <Label className="text-[#8696a0] font-bold text-base">اختر المرحلة:</Label>
-                      <Select value={selectedLevel} onValueChange={setSelectedLevel}>
+                      <Select value={selectedLevel} onValueChange={(value) => {
+                        setSelectedLevel(value);
+                        localStorage.setItem('aamal_selected_level', value);
+                      }}>
                         <SelectTrigger className="w-full h-14 text-lg bg-[#111b21] border-[#2f3b43] text-white rounded-xl focus:ring-[#00a884]" dir="rtl">
                           <SelectValue placeholder="اختر المرحلة" />
                         </SelectTrigger>
@@ -1571,6 +1622,40 @@ export default function Home() {
                   </div>
                 </>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Modal ترتيب الجلسات */}
+        {showTextReorderModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" dir="rtl">
+            <div className="bg-[#202c33] border border-[#2f3b43] rounded-3xl w-full max-w-lg p-6 shadow-2xl animate-in zoom-in-95 duration-200">
+              <div className="flex justify-between items-center border-b border-[#2f3b43] pb-4 mb-4">
+                <h2 className="text-xl font-bold text-white flex items-center gap-2"><GripVertical className="text-[#00a884]"/> ترتيب الجلسات (النصوص)</h2>
+                <button onClick={() => setShowTextReorderModal(false)} className="text-[#8696a0] hover:text-white"><X size={24}/></button>
+              </div>
+              <p className="text-[#8696a0] mb-4 text-sm">اسحب الجلسة للأعلى أو الأسفل لترتيبها (سيتم الحفظ تلقائياً).</p>
+              
+              <div className="max-h-[60vh] overflow-y-auto space-y-2 pr-2">
+                {texts.map((text, index) => (
+                  <div
+                    key={text.id}
+                    draggable
+                    onDragStart={() => (textDragItem.current = index)}
+                    onDragEnter={() => (textDragOverItem.current = index)}
+                    onDragEnd={handleTextSort}
+                    onDragOver={(e) => e.preventDefault()}
+                    className="flex items-center gap-3 bg-[#111b21] p-4 rounded-xl border border-[#2f3b43] cursor-grab active:cursor-grabbing hover:bg-[#2a3942] transition-colors"
+                  >
+                    <GripVertical className="text-[#54656f]" />
+                    <span className="text-white font-bold text-lg">{text.name}</span>
+                  </div>
+                ))}
+              </div>
+
+              <Button onClick={() => setShowTextReorderModal(false)} className="w-full mt-6 bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-12 rounded-xl text-lg">
+                تم الانتهاء
+              </Button>
             </div>
           </div>
         )}
