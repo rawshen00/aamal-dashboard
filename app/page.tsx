@@ -114,6 +114,12 @@ export default function Home() {
   const defaultMediaRecorderRef = useRef<MediaRecorder | null>(null)
   const defaultAudioChunksRef = useRef<Blob[]>([])
 
+  // States for Lesson Pages
+  const [lessonTitle, setLessonTitle] = useState("")
+  const [lessonText, setLessonText] = useState("")
+  const [lessonImage, setLessonImage] = useState<File | null>(null)
+  const [lessonAudio, setLessonAudio] = useState<File | null>(null)
+
   const [readingSentence, setReadingSentence] = useState("")
   const [jumbleWords, setJumbleWords] = useState("")
   const [imageFile, setImageFile] = useState<File | null>(null)
@@ -154,6 +160,7 @@ export default function Home() {
   });
 
   const challengeTypesList = [
+    { id: 'lesson', label: '📖 صفحة تعليمية' },
     { id: 'reading', label: '🎙️ قراءة النص' },
     { id: 'jumble', label: '🧩 ترتيب جملة' },
     { id: 'match', label: '🖼️ صورة وكلمة' },
@@ -234,14 +241,8 @@ export default function Home() {
       setEditFullContent("")
       setIsTextUnlocked(false)
       setSyncTimestamps([])
-    }
-     
+    } 
   }, [selectedText, texts])
-  const fetchChallenges = async (levelId: string) => 
-    {
-    const { data } = await supabase.from('challenges').select('*').eq('level_id', levelId).order('order_index', { ascending: true }).order('id', { ascending: true })
-    if (data) setChallenges(data)
-  }
 
   useEffect(() => { if (selectedLevel) { fetchChallenges(selectedLevel) } else { setChallenges([]) } }, [selectedLevel])
 
@@ -405,6 +406,11 @@ export default function Home() {
         setSelectedLevel("");
       }
     }
+  }
+
+  const fetchChallenges = async (levelId: string) => {
+    const { data } = await supabase.from('challenges').select('*').eq('level_id', levelId).order('order_index', { ascending: true }).order('id', { ascending: true })
+    if (data) setChallenges(data)
   }
 
   const handleTextSort = async () => {
@@ -863,7 +869,18 @@ export default function Home() {
         return data.publicUrl;
       };
 
-      if (type === 'reading') {
+      if (type === 'lesson') {
+        if (!lessonText && !lessonImage && !lessonAudio) throw new Error("يجب إدخال نص، صورة، أو صوت على الأقل");
+        let imageUrl = null;
+        let customAudioUrl = null;
+        if (lessonImage) imageUrl = await uploadFile(lessonImage, 'images');
+        if (lessonAudio) customAudioUrl = await uploadFile(lessonAudio, 'audios');
+        
+        contentObj = { title: lessonTitle, text: lessonText, image_url: imageUrl };
+        if (customAudioUrl) {
+           contentObj.instruction_audio = customAudioUrl;
+        }
+      } else if (type === 'reading') {
         if (!readingSentence) throw new Error("أدخل الجملة");
         contentObj = { sentence: readingSentence };
       } else if (type === 'jumble') {
@@ -904,7 +921,8 @@ export default function Home() {
         contentObj = { syllables_text: matchSyllableText, options: matchSyllableOptions, correct: matchSyllableCorrect };
       }
 
-      if (defaultAudios[type]) {
+      // إضافة الصوت الافتراضي إذا لم يكن هناك صوت مخصص في الصفحة التعليمية أو كان نوع آخر
+      if (defaultAudios[type] && !contentObj.instruction_audio) {
         contentObj.instruction_audio = defaultAudios[type];
       }
 
@@ -919,9 +937,11 @@ export default function Home() {
 
       if (error) throw error;
 
-      alert("✅ تم إضافة التحدي بنجاح!");
+      alert("✅ تم الإضافة بنجاح!");
       fetchChallenges(selectedLevel);
 
+      // تفريغ الحقول
+      setLessonTitle(""); setLessonText(""); setLessonImage(null); setLessonAudio(null);
       setReadingSentence(""); setJumbleWords(""); setImageFile(null); setMatchWord("");
       setOptions(["", "", ""]); setSpellingWord(""); setSpellingImage(null); setMissingWord("");
       setCorrectLetter(""); setMissingOptions(["", "", ""]); setMissingImage(null);
@@ -1217,11 +1237,11 @@ export default function Home() {
                   <div className="space-y-8 animate-in fade-in duration-500">
                     <Card className="bg-[#202c33] border-2 border-[#00a884] shadow-[0_0_20px_rgba(0,168,132,0.1)] rounded-3xl overflow-hidden mt-8">
                       <CardHeader className="bg-[#182b28] border-b border-[#00a884]/30 pb-4">
-                        <CardTitle className="text-2xl text-white flex items-center gap-2"><PlusCircle className="text-[#00a884]" /> إنشاء تحدي جديد</CardTitle>
+                        <CardTitle className="text-2xl text-white flex items-center gap-2"><PlusCircle className="text-[#00a884]" /> إضافة محتوى جديد</CardTitle>
                       </CardHeader>
                       <CardContent className="pt-6">
                         
-                        <Tabs defaultValue="reading" className="w-full" dir="rtl">
+                        <Tabs defaultValue="lesson" className="w-full" dir="rtl">
                           <div className="w-full overflow-x-auto pb-2 mb-6 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                             <TabsList className="inline-flex w-max min-w-full justify-start gap-2 h-auto p-2 bg-[#111b21] rounded-2xl border border-[#2f3b43]">
                               {challengeTypesList.map(tab => (
@@ -1231,6 +1251,22 @@ export default function Home() {
                               ))}
                             </TabsList>
                           </div>
+
+                          <TabsContent value="lesson" className="space-y-6">
+                            <Label className="text-[#8696a0] font-bold">عنوان الصفحة (اختياري - يظهر بالأعلى):</Label>
+                            <Input value={lessonTitle} onChange={(e) => setLessonTitle(e.target.value)} placeholder="مثال: هيا نتعلم معاً" className="text-right bg-[#111b21] border-[#2f3b43] text-white h-14 text-lg rounded-xl" />
+                            
+                            <Label className="text-[#8696a0] font-bold">النص أو الشرح التعليمي (اختياري):</Label>
+                            <Textarea value={lessonText} onChange={(e) => setLessonText(e.target.value)} placeholder="اكتب الشرح هنا ليقرأه الطالب..." className="text-right bg-[#111b21] border-[#2f3b43] text-white text-lg rounded-xl min-h-[100px]" />
+                            
+                            <Label className="text-[#8696a0] font-bold">صورة توضيحية (اختياري):</Label>
+                            <Input type="file" accept="image/*" onChange={(e) => setLessonImage(e.target.files?.[0] || null)} className="text-right cursor-pointer bg-[#111b21] border-[#2f3b43] text-[#8696a0] h-14 rounded-xl file:bg-[#2a3942] file:text-white" />
+                            
+                            <Label className="text-[#8696a0] font-bold flex items-center gap-2">تسجيل صوتي يشرح الدرس بصوتك (اختياري):</Label>
+                            <Input type="file" accept="audio/*" onChange={(e) => setLessonAudio(e.target.files?.[0] || null)} className="text-right cursor-pointer bg-[#111b21] border-[#2f3b43] text-[#8696a0] h-14 rounded-xl file:bg-[#2a3942] file:text-white" />
+                            
+                            <Button onClick={() => handleAddChallenge('lesson')} disabled={isUploading} className="w-full bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 text-lg rounded-xl">{isUploading ? "جاري الرفع والحفظ..." : "حفظ الصفحة التعليمية"}</Button>
+                          </TabsContent>
 
                           <TabsContent value="reading" className="space-y-6">
                             <Label className="text-[#8696a0] font-bold">الجملة المطلوبة للقراءة:</Label>
