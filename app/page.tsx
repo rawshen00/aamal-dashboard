@@ -120,6 +120,9 @@ export default function Home() {
   const [lessonImage, setLessonImage] = useState<File | null>(null)
   const [lessonAudio, setLessonAudio] = useState<File | null>(null)
 
+  // 💡 متغير المساعدة الصوتية الجديد
+  const [hintAudioFile, setHintAudioFile] = useState<File | null>(null)
+
   const [readingSentence, setReadingSentence] = useState("")
   const [jumbleWords, setJumbleWords] = useState("")
   const [imageFile, setImageFile] = useState<File | null>(null)
@@ -581,7 +584,7 @@ export default function Home() {
   const startRecordingText = async () => {
     if (isSavingTextDetails || textMediaRecorderRef.current) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      alert("⚠️ متصفحك لا يدعم التسجيل."); return;
+      alert("⚠️️ متصفحك لا يدعم التسجيل."); return;
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -869,6 +872,12 @@ export default function Home() {
         return data.publicUrl;
       };
 
+      // رفع الصوت المساعد إذا كان موجوداً (يطبق على كل التحديات التي توفره)
+      let hintAudioUrl = null;
+      if (hintAudioFile) {
+        hintAudioUrl = await uploadFile(hintAudioFile, 'audios');
+      }
+
       if (type === 'lesson') {
         if (!lessonText && !lessonImage && !lessonAudio) throw new Error("يجب إدخال نص، صورة، أو صوت على الأقل");
         let imageUrl = null;
@@ -921,7 +930,12 @@ export default function Home() {
         contentObj = { syllables_text: matchSyllableText, options: matchSyllableOptions, correct: matchSyllableCorrect };
       }
 
-      // إضافة الصوت الافتراضي إذا لم يكن هناك صوت مخصص في الصفحة التعليمية أو كان نوع آخر
+      // دمج الصوت المساعد للتحدي في حال تم اختياره
+      if (hintAudioUrl) {
+        contentObj.hint_audio = hintAudioUrl;
+      }
+
+      // إضافة الصوت الافتراضي للتعليمات (إذا لم يكن هناك صوت مخصص في الصفحة التعليمية)
       if (defaultAudios[type] && !contentObj.instruction_audio) {
         contentObj.instruction_audio = defaultAudios[type];
       }
@@ -948,6 +962,7 @@ export default function Home() {
       setHuntTarget(""); setHuntDistractors("");
       setSyllableWord(""); setSyllableParts(""); setMatchSyllableText(""); setMatchSyllableOptions(["", "", ""]); setMatchSyllableCorrect("");
       setAudioPairs([{ word: "", file: null }, { word: "", file: null }]);
+      setHintAudioFile(null); // تفريغ حقل الصوت المساعد
 
     } catch (err: any) {
       alert("❌ خطأ: " + err.message);
@@ -1265,19 +1280,23 @@ export default function Home() {
                             <Label className="text-[#8696a0] font-bold flex items-center gap-2">تسجيل صوتي يشرح الدرس بصوتك (اختياري):</Label>
                             <Input type="file" accept="audio/*" onChange={(e) => setLessonAudio(e.target.files?.[0] || null)} className="text-right cursor-pointer bg-[#111b21] border-[#2f3b43] text-[#8696a0] h-14 rounded-xl file:bg-[#2a3942] file:text-white" />
                             
-                            <Button onClick={() => handleAddChallenge('lesson')} disabled={isUploading} className="w-full bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 text-lg rounded-xl">{isUploading ? "جاري الرفع والحفظ..." : "حفظ الصفحة التعليمية"}</Button>
+                            <Button onClick={() => handleAddChallenge('lesson')} disabled={isUploading} className="w-full mt-4 bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 text-lg rounded-xl">{isUploading ? "جاري الرفع والحفظ..." : "حفظ الصفحة التعليمية"}</Button>
                           </TabsContent>
 
                           <TabsContent value="reading" className="space-y-6">
                             <Label className="text-[#8696a0] font-bold">الجملة المطلوبة للقراءة:</Label>
                             <Input value={readingSentence} onChange={(e) => setReadingSentence(e.target.value)} placeholder="مثال: أنا أحب مدرستي" className="text-right bg-[#111b21] border-[#2f3b43] text-white h-14 text-lg rounded-xl" />
-                            <Button onClick={() => handleAddChallenge('reading')} disabled={isUploading} className="w-full bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 text-lg rounded-xl">{isUploading ? "جاري الحفظ..." : "حفظ التحدي"}</Button>
+                            <Button onClick={() => handleAddChallenge('reading')} disabled={isUploading} className="w-full mt-4 bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 text-lg rounded-xl">{isUploading ? "جاري الحفظ..." : "حفظ التحدي"}</Button>
                           </TabsContent>
                           
                           <TabsContent value="jumble" className="space-y-6">
                             <Label className="text-[#8696a0] font-bold">الكلمات للترتيب (مفصولة بفاصلة):</Label>
                             <Input value={jumbleWords} onChange={(e) => setJumbleWords(e.target.value)} placeholder="مثال: أنا, أحب, مدرستي" className="text-right bg-[#111b21] border-[#2f3b43] text-white h-14 text-lg rounded-xl" />
-                            <Button onClick={() => handleAddChallenge('jumble')} disabled={isUploading} className="w-full bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 text-lg rounded-xl">{isUploading ? "جاري الحفظ..." : "حفظ التحدي"}</Button>
+                            
+                            <Label className="text-[#8696a0] font-bold flex items-center gap-2 mt-4"><Volume2 size={18} className="text-[#00a884]" /> مساعدة صوتية (اختياري - يظهر كزر استماع للطالب):</Label>
+                            <Input type="file" accept="audio/*" onChange={(e) => setHintAudioFile(e.target.files?.[0] || null)} className="text-right cursor-pointer bg-[#111b21] border-[#2f3b43] text-[#8696a0] h-14 rounded-xl file:bg-[#2a3942] file:text-white" />
+                            
+                            <Button onClick={() => handleAddChallenge('jumble')} disabled={isUploading} className="w-full mt-4 bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 text-lg rounded-xl">{isUploading ? "جاري الحفظ..." : "حفظ التحدي"}</Button>
                           </TabsContent>
 
                           <TabsContent value="syllables" className="space-y-6">
@@ -1287,7 +1306,11 @@ export default function Home() {
                               <Label className="text-[#8696a0] font-bold block mt-4">المقاطع (مفصولة بفاصلة):</Label>
                               <Input value={syllableParts} onChange={(e) => setSyllableParts(e.target.value)} placeholder="تَـ, طْـ, بِـ, يـ, ق" className="text-center text-xl tracking-widest bg-[#202c33] border-[#2f3b43] text-white h-14 rounded-xl" />
                             </div>
-                            <Button onClick={() => handleAddChallenge('syllables')} disabled={isUploading} className="w-full bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 text-lg rounded-xl">{isUploading ? "جاري الحفظ..." : "حفظ التحدي"}</Button>
+                            
+                            <Label className="text-[#8696a0] font-bold flex items-center gap-2 mt-4"><Volume2 size={18} className="text-[#00a884]" /> مساعدة صوتية (اختياري - يظهر كزر استماع للطالب):</Label>
+                            <Input type="file" accept="audio/*" onChange={(e) => setHintAudioFile(e.target.files?.[0] || null)} className="text-right cursor-pointer bg-[#111b21] border-[#2f3b43] text-[#8696a0] h-14 rounded-xl file:bg-[#2a3942] file:text-white" />
+                            
+                            <Button onClick={() => handleAddChallenge('syllables')} disabled={isUploading} className="w-full mt-4 bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 text-lg rounded-xl">{isUploading ? "جاري الحفظ..." : "حفظ التحدي"}</Button>
                           </TabsContent>
 
                           <TabsContent value="syllable_match" className="space-y-6">
@@ -1301,7 +1324,11 @@ export default function Home() {
                               <Label className="text-[#00a884] font-bold">الكلمة الصحيحة:</Label>
                               <Input value={matchSyllableCorrect} onChange={(e) => setMatchSyllableCorrect(e.target.value)} placeholder="مثال: تطبيق" className="text-center font-bold bg-[#182b28] border-[#00a884] text-white h-14 rounded-xl" />
                             </div>
-                            <Button onClick={() => handleAddChallenge('syllable_match')} disabled={isUploading} className="w-full bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 text-lg rounded-xl">{isUploading ? "جاري الحفظ..." : "حفظ التحدي"}</Button>
+                            
+                            <Label className="text-[#8696a0] font-bold flex items-center gap-2 mt-4"><Volume2 size={18} className="text-[#00a884]" /> مساعدة صوتية (اختياري - يظهر كزر استماع للطالب):</Label>
+                            <Input type="file" accept="audio/*" onChange={(e) => setHintAudioFile(e.target.files?.[0] || null)} className="text-right cursor-pointer bg-[#111b21] border-[#2f3b43] text-[#8696a0] h-14 rounded-xl file:bg-[#2a3942] file:text-white" />
+                            
+                            <Button onClick={() => handleAddChallenge('syllable_match')} disabled={isUploading} className="w-full mt-4 bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 text-lg rounded-xl">{isUploading ? "جاري الحفظ..." : "حفظ التحدي"}</Button>
                           </TabsContent>
 
                           <TabsContent value="match" className="space-y-6">
@@ -1313,7 +1340,11 @@ export default function Home() {
                             </div>
                             <Label className="text-[#00a884] font-bold">الكلمة الصحيحة:</Label>
                             <Input value={matchWord} onChange={(e) => setMatchWord(e.target.value)} placeholder="الكلمة المطابقة للصورة" className="text-center font-bold bg-[#182b28] border-[#00a884] text-white h-14 rounded-xl" />
-                            <Button onClick={() => handleAddChallenge('match')} disabled={isUploading} className="w-full bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 rounded-xl">{isUploading ? "جاري الرفع والحفظ..." : "حفظ التحدي"}</Button>
+                            
+                            <Label className="text-[#8696a0] font-bold flex items-center gap-2 mt-4"><Volume2 size={18} className="text-[#00a884]" /> مساعدة صوتية (اختياري - يظهر كزر استماع للطالب):</Label>
+                            <Input type="file" accept="audio/*" onChange={(e) => setHintAudioFile(e.target.files?.[0] || null)} className="text-right cursor-pointer bg-[#111b21] border-[#2f3b43] text-[#8696a0] h-14 rounded-xl file:bg-[#2a3942] file:text-white" />
+                            
+                            <Button onClick={() => handleAddChallenge('match')} disabled={isUploading} className="w-full mt-4 bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 rounded-xl">{isUploading ? "جاري الرفع والحفظ..." : "حفظ التحدي"}</Button>
                           </TabsContent>
                           
                           <TabsContent value="audio_match" className="space-y-6">
@@ -1344,7 +1375,7 @@ export default function Home() {
                               ))}
                             </div>
                             <Button onClick={addAudioPair} variant="outline" className="w-full border-dashed border-2 border-[#2f3b43] text-[#8696a0] h-14 rounded-xl"><Plus className="ml-2 h-6 w-6" /> إضافة كلمة أخرى</Button>
-                            <Button onClick={() => handleAddChallenge('audio_match')} disabled={isUploading || recordingIndex !== null} className="w-full bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 rounded-xl">{isUploading ? "جاري الرفع..." : "حفظ التحدي"}</Button>
+                            <Button onClick={() => handleAddChallenge('audio_match')} disabled={isUploading || recordingIndex !== null} className="w-full mt-4 bg-[#00a884] hover:bg-[#00cf9f] text-[#111b21] font-bold h-14 rounded-xl">{isUploading ? "جاري الرفع..." : "حفظ التحدي"}</Button>
                           </TabsContent>
                           
                           <TabsContent value="spelling" className="space-y-6">
@@ -1352,7 +1383,11 @@ export default function Home() {
                             <Input type="file" accept="image/*" onChange={(e) => setSpellingImage(e.target.files?.[0] || null)} className="text-right bg-[#111b21] border-[#2f3b43] text-[#8696a0] h-14 rounded-xl file:bg-[#2a3942] file:text-white" />
                             <Label className="text-[#00a884] font-bold">الكلمة الصحيحة:</Label>
                             <Input value={spellingWord} onChange={(e) => setSpellingWord(e.target.value)} placeholder="مثال: تفاحة" className="text-center font-bold bg-[#182b28] border-[#00a884] text-white h-14 rounded-xl" />
-                            <Button onClick={() => handleAddChallenge('spelling')} disabled={isUploading} className="w-full bg-[#00a884] font-bold text-[#111b21] h-14 rounded-xl">{isUploading ? "جاري الرفع..." : "حفظ التحدي"}</Button>
+                            
+                            <Label className="text-[#8696a0] font-bold flex items-center gap-2 mt-4"><Volume2 size={18} className="text-[#00a884]" /> مساعدة صوتية (اختياري - يظهر كزر استماع للطالب):</Label>
+                            <Input type="file" accept="audio/*" onChange={(e) => setHintAudioFile(e.target.files?.[0] || null)} className="text-right cursor-pointer bg-[#111b21] border-[#2f3b43] text-[#8696a0] h-14 rounded-xl file:bg-[#2a3942] file:text-white" />
+                            
+                            <Button onClick={() => handleAddChallenge('spelling')} disabled={isUploading} className="w-full mt-4 bg-[#00a884] font-bold text-[#111b21] h-14 rounded-xl">{isUploading ? "جاري الرفع..." : "حفظ التحدي"}</Button>
                           </TabsContent>
                           
                           <TabsContent value="missing_letter" className="space-y-6">
@@ -1366,7 +1401,11 @@ export default function Home() {
                             </div>
                             <Label className="text-[#00a884] font-bold">الحرف الصحيح:</Label>
                             <Input value={correctLetter} onChange={(e) => setCorrectLetter(e.target.value)} placeholder="مثال: أ" className="text-center font-bold bg-[#182b28] border-[#00a884] text-white h-14 rounded-xl" />
-                            <Button onClick={() => handleAddChallenge('missing_letter')} disabled={isUploading} className="w-full bg-[#00a884] font-bold text-[#111b21] h-14 rounded-xl">{isUploading ? "جاري الرفع..." : "حفظ التحدي"}</Button>
+                            
+                            <Label className="text-[#8696a0] font-bold flex items-center gap-2 mt-4"><Volume2 size={18} className="text-[#00a884]" /> مساعدة صوتية (اختياري - يظهر كزر استماع للطالب):</Label>
+                            <Input type="file" accept="audio/*" onChange={(e) => setHintAudioFile(e.target.files?.[0] || null)} className="text-right cursor-pointer bg-[#111b21] border-[#2f3b43] text-[#8696a0] h-14 rounded-xl file:bg-[#2a3942] file:text-white" />
+                            
+                            <Button onClick={() => handleAddChallenge('missing_letter')} disabled={isUploading} className="w-full mt-4 bg-[#00a884] font-bold text-[#111b21] h-14 rounded-xl">{isUploading ? "جاري الرفع..." : "حفظ التحدي"}</Button>
                           </TabsContent>
                           
                           <TabsContent value="letter_hunt" className="space-y-6">
@@ -1376,7 +1415,11 @@ export default function Home() {
                               <Label className="text-[#8696a0] font-bold text-right block mt-4">الحروف المشتتة (مفصولة بفاصلة):</Label>
                               <Input value={huntDistractors} onChange={(e) => setHuntDistractors(e.target.value)} placeholder="ت, ث, ن, ي" className="text-center text-2xl tracking-widest bg-[#202c33] border-[#2f3b43] text-white h-14 rounded-xl" />
                             </div>
-                            <Button onClick={() => handleAddChallenge('letter_hunt')} disabled={isUploading} className="w-full bg-[#00a884] font-bold text-[#111b21] h-14 rounded-xl">{isUploading ? "جاري الرفع..." : "حفظ التحدي"}</Button>
+                            
+                            <Label className="text-[#8696a0] font-bold flex items-center gap-2 mt-4"><Volume2 size={18} className="text-[#00a884]" /> مساعدة صوتية (اختياري - يظهر كزر استماع للطالب):</Label>
+                            <Input type="file" accept="audio/*" onChange={(e) => setHintAudioFile(e.target.files?.[0] || null)} className="text-right cursor-pointer bg-[#111b21] border-[#2f3b43] text-[#8696a0] h-14 rounded-xl file:bg-[#2a3942] file:text-white" />
+                            
+                            <Button onClick={() => handleAddChallenge('letter_hunt')} disabled={isUploading} className="w-full mt-4 bg-[#00a884] font-bold text-[#111b21] h-14 rounded-xl">{isUploading ? "جاري الرفع..." : "حفظ التحدي"}</Button>
                           </TabsContent>
                         </Tabs>
                       </CardContent>
